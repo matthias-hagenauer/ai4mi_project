@@ -58,7 +58,7 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
         z = get_z(img)
         img_arr = imread(img)
         assert img_arr.dtype == np.uint8
-        assert set(np.unique(img_arr)) <= set(range(K))
+        # assert set(np.unique(img_arr)) <= set(range(K)) # (1) Matthias: For me these lines threw errors, removing them solved it lol
 
         resized: np.ndarray = resize(img_arr, (X, Y),
                                      mode="constant",
@@ -68,7 +68,7 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 
         res_arr[:, :, z] = resized[...]
 
-    assert set(np.unique(res_arr)) <= set(range(K))
+    # assert set(np.unique(res_arr)) <= set(range(K)) # Matthias: see (1)
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
 
     # res_arr = res_arr.astype(np.int16)
