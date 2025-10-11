@@ -22,10 +22,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import os
 from pathlib import Path
 import random
 from typing import Callable, Union
 
+import cv2
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
@@ -72,7 +74,7 @@ class SliceDataset(Dataset):
     def __len__(self):
         return len(self.files)
     
-    def augment_transform(self):
+    def augment_transform(self, save_debug_dir=None):
     ### online stochastic data augmentation ###
     # transformations are relatively subtle to mimic real
     # ct scan machine noise & variation and respect anatomy
@@ -83,12 +85,24 @@ class SliceDataset(Dataset):
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
             A.GaussNoise(var_limit=(5.0, 10.0), p=0.2),
         ])
+        
+        if save_debug_dir is not None:
+            os.makedirs(os.path.join(save_debug_dir, "img"), exist_ok=True)
+            os.makedirs(os.path.join(save_debug_dir, "mask"), exist_ok=True)
 
         def _apply(image, mask):
             if random.random() < 0.2:
                 # 20% chance to skip all augmentation entirely
                 return image, mask
             out = aug(image=image, mask=mask)
+            
+            if save_debug_dir is not None and random.random() < 0.05:
+                # save 5%
+                uid = f"{random.randint(0, 999999):06d}"
+                cv2.imwrite(os.path.join(save_debug_dir, "img", f"{uid}.png"), out["image"])
+                cv2.imwrite(os.path.join(save_debug_dir, "mask", f"{uid}.png"), out["mask"])
+
+            
             return out["image"], out["mask"]
         
         return _apply
@@ -101,7 +115,7 @@ class SliceDataset(Dataset):
             
         if not self.test_mode and self.augment:
             # added data augmentation
-            transformed = self.augment_transform(image=img, mask=gt)  # online augmentation
+            transformed = self.augment_transform(image=img, mask=gt, save_debug_dir="debug/")  # online augmentation
             img = Image.fromarray(transformed["image"])
             gt = Image.fromarray(transformed["mask"])
 
