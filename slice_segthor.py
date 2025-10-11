@@ -50,6 +50,36 @@ def norm_arr(img: np.ndarray) -> np.ndarray:
 
     return res.astype(np.uint8)
 
+def compute_foreground_stats(image, body_mask):
+    # get only values within the mask
+    foreground_vals = image[body_mask]
+
+    # get percentiles, mean, std
+    p_low, p_high = np.percentile(foreground_vals, (0.5, 99.5))
+    mean = np.mean(foreground_vals)
+    std = np.std(foreground_vals)
+
+    return {
+        "mean": float(mean),
+        "std": float(std),
+        "p_low": float(p_low),
+        "p_high": float(p_high)
+    }
+
+def norm_arr(img: np.ndarray) -> np.ndarray:
+    # make body mask (i.e exclude backgound / air fat starts at -100 + 100 margin)
+    body_mask = img > -200
+    
+    # get stats
+    stats = compute_foreground_stats(img, body_mask)
+    img_clipped = np.clip(img, stats["p_low"], stats["p_high"])
+    # normalizing based on percentiles due to high extreme datapoints distorting the outputs
+    # normalize [0, 1] based on clipped range
+    img_norm = (img_clipped - stats["p_low"]) / (stats["p_high"] - stats["p_low"])
+    
+    # convert into format we need 
+    img_uint8 = (img_norm * 255).astype(np.uint8)  
+    return img_uint8
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
     assert ct.dtype in [np.int16, np.int32], ct.dtype
