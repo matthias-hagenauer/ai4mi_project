@@ -56,7 +56,7 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 
 class SliceDataset(Dataset):
     def __init__(self, subset, root_dir, img_transform=None,
-                 gt_transform=None, augment=False, equalize=False, debug=False):
+                 gt_transform=None, augment=False, equalize=False, debug=False, seed=None):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
@@ -68,6 +68,7 @@ class SliceDataset(Dataset):
         self.files = make_dataset(root_dir, subset)
         if debug:
             self.files = self.files[:10]
+        self.seed = seed
 
         print(f">> Created {subset} dataset with {len(self)} images...")
 
@@ -78,13 +79,16 @@ class SliceDataset(Dataset):
     ### online stochastic data augmentation ###
     # transformations are relatively subtle to mimic real
     # ct scan machine noise & variation and respect anatomy
-        aug = A.Compose([
-            A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, border_mode=0, p=0.8),
-            A.ElasticTransform(alpha=20, sigma=5, alpha_affine=5, border_mode=0, p=0.3),
-            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
-            A.GaussNoise(var_limit=(5.0, 10.0), p=0.2),
-        ])
+        aug = A.Compose(
+            [
+                A.HorizontalFlip(p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, border_mode=0, p=0.8),
+                A.ElasticTransform(alpha=20, sigma=5, alpha_affine=5, border_mode=0, p=0.3),
+                A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+                A.GaussNoise(var_limit=(5.0, 10.0), p=0.2),
+            ],
+            seed=self.seed
+        )
         
         if save_debug_dir is not None:
             os.makedirs(os.path.join(save_debug_dir, "img"), exist_ok=True)
