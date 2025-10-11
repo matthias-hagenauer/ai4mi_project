@@ -142,8 +142,27 @@ def runTraining(args):
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     best_dice: float = 0
+    start_epoch = 0
 
-    for e in range(args.epochs):
+    print(args.resume)
+    # load checkpoint if resume flag is put down
+    if args.resume and args.resume.exists():
+        print(f">>> Resuming training from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        net.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_dice = checkpoint['best_dice']
+        print(f">>> Resumed at epoch {start_epoch}, best_dice={best_dice:.4f}")
+
+        # resume logs
+        if (args.dest / "loss_tra.npy").exists():
+            log_loss_tra = np.load(args.dest / "loss_tra.npy")
+            log_dice_tra = np.load(args.dest / "dice_tra.npy")
+            log_loss_val = np.load(args.dest / "loss_val.npy")
+            log_dice_val = np.load(args.dest / "dice_val.npy")
+
+    for e in range(start_epoch, args.epochs):
         for m in ['train', 'val']:
             match m:
                 case 'train':
@@ -215,6 +234,17 @@ def runTraining(args):
         np.save(args.dest / "loss_val.npy", log_loss_val)
         np.save(args.dest / "dice_val.npy", log_dice_val)
 
+        # make checkpoint every 5 epochs
+        if e % 5 == 0:
+            # save checkpoint to resume
+            checkpoint_path = args.dest / f"checkpoint_{e}.pt"
+            torch.save({
+                'epoch': e,
+                'model_state_dict': net.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_dice': best_dice
+            }, checkpoint_path)
+
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
@@ -245,7 +275,9 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
-
+    parser.add_argument('--resume', type=Path,
+                    help="Path to a checkpoint (.pt) to resume training from.")
+    
     args = parser.parse_args()
 
     pprint(args)
