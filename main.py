@@ -37,7 +37,6 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
 from torch.utils.data import DataLoader
-import albumentations as A
 
 from functools import partial 
 
@@ -88,7 +87,6 @@ def set_seed(seed: int, device):
     print(f">> Set all seeds to {seed}")
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    A.seed(seed)
     #g = torch.Generator()
     #g.manual_seed(seed)
 
