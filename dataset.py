@@ -113,7 +113,7 @@ class SliceDataset(Dataset):
         if not self.test_mode:
             gt = Image.open(gt_path)
             
-        if not self.test_mode and self.augment:
+        if not self.test_mode and self.augmentation:
             # added data augmentation
             transformed = self.augment_transform(image=img, mask=gt, save_debug_dir="debug/")  # online augmentation
             img = Image.fromarray(transformed["image"])
