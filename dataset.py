@@ -28,6 +28,7 @@ import random
 from typing import Callable, Union
 
 import cv2
+import numpy as np
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
@@ -75,38 +76,37 @@ class SliceDataset(Dataset):
     def __len__(self):
         return len(self.files)
     
-    def augment_transform(self, save_debug_dir=None):
+    def augment_transform(self):
     ### online stochastic data augmentation ###
     # transformations are relatively subtle to mimic real
     # ct scan machine noise & variation and respect anatomy
         aug = A.Compose(
             [
                 A.HorizontalFlip(p=0.5),
-                A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, border_mode=0, p=0.8),
-                A.ElasticTransform(alpha=20, sigma=5, alpha_affine=5, border_mode=0, p=0.3),
+                A.Affine(translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},  # small shifts
+                         scale=(0.9, 1.1),      # slight zoom in/out
+                         rotate=(-15, 15),      # small rotations
+                         shear=(-5, 5),         # gentle shear
+                         interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST,
+                         balanced_scale=True,   # balanced up/down scaling
+                         border_mode=cv2.BORDER_CONSTANT,
+                         p=0.8),
+                A.ElasticTransform(alpha=20, sigma=5,         # moderate intensity of deformation and small smoothing for local distortions
+                                   interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST,
+                                   same_dxdy=True,            # same field for x/y to avoid weird anisotropic distortions
+                                   border_mode=cv2.BORDER_CONSTANT,
+                                   p=0.3),
                 A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
-                A.GaussNoise(var_limit=(5.0, 10.0), p=0.2),
+                A.GaussNoise(std_range=(0.01, 0.05), p=0.2),
             ],
             seed=self.seed
         )
         
-        if save_debug_dir is not None:
-            os.makedirs(os.path.join(save_debug_dir, "img"), exist_ok=True)
-            os.makedirs(os.path.join(save_debug_dir, "mask"), exist_ok=True)
-
         def _apply(image, mask):
             if random.random() < 0.2:
                 # 20% chance to skip all augmentation entirely
                 return image, mask
             out = aug(image=image, mask=mask)
-            
-            if save_debug_dir is not None and random.random() < 0.05:
-                # save 5%
-                uid = f"{random.randint(0, 999999):06d}"
-                cv2.imwrite(os.path.join(save_debug_dir, "img", f"{uid}.png"), out["image"])
-                cv2.imwrite(os.path.join(save_debug_dir, "mask", f"{uid}.png"), out["mask"])
-
-            
             return out["image"], out["mask"]
         
         return _apply
@@ -119,9 +119,10 @@ class SliceDataset(Dataset):
             
         if not self.test_mode and self.augmentation:
             # added data augmentation
-            transformed = self.augment_transform(image=img, mask=gt, save_debug_dir="debug/")  # online augmentation
-            img = Image.fromarray(transformed["image"])
-            gt = Image.fromarray(transformed["mask"])
+            aug_fn = self.augment_transform()  # online augmentation
+            img, gt = aug_fn(np.array(img), np.array(gt))
+            img = Image.fromarray(img)
+            gt = Image.fromarray(gt)
 
         img: Tensor = self.img_transform(img)  # base transform
 

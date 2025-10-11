@@ -119,7 +119,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              gt_transform= partial(gt_transform, K),
                              augment=args.augment,  #!
                              debug=args.debug,
-                             seed=seed)
+                             seed=args.seed)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
