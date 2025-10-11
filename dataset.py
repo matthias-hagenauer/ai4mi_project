@@ -32,7 +32,7 @@ from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
 
-import albumetations as A
+import albumentations as A
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
