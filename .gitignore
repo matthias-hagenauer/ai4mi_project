@@ -1,9 +1,10 @@
 data/*
 !data/*.b3sum
 !data/*.sha256
-results/
+results_2/
 volumes/
 ai4mi/
 __pycache__/
-
+.*.nii
 projects
+/results/

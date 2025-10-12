@@ -23,12 +23,14 @@
 # SOFTWARE.
 
 import argparse
+import random
 import warnings
 from typing import Any
 from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
 from shutil import copytree, rmtree
+from dataclasses import dataclass
 
 import torch
 import numpy as np
@@ -36,7 +38,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
 from torch.utils.data import DataLoader
-
+import pandas as pd
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
@@ -49,6 +51,7 @@ from utils import (Dcm,
                    save_images)
 
 from losses import (CrossEntropy)
+from functools import partial
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -56,13 +59,217 @@ datasets_params: dict[str, dict[str, Any]] = {}
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+optimizer_name = None
+# --- NEW: write a compact metrics row for aggregation ---
+import json, csv
+
+def _ensure_dir(p: Path):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+def write_run_summary(args, e_best, log_dice_val_epoch):
+    K = log_dice_val_epoch.shape[1]
+    fg = slice(1, K) if K > 1 else slice(0, K)
+    per_img_macro = log_dice_val_epoch[:, fg].mean(axis=1)
+    macro_mean = float(per_img_macro.mean())
+    macro_std = float(per_img_macro.std())
+    per_class_means = [float(log_dice_val_epoch[:, k].mean()) for k in range(K)]
+
+    js = {
+        "dataset": args.dataset,
+        "mode": args.mode,
+        "seed": getattr(args, "seed", None),
+        "use_roi": bool(getattr(args, "use_roi", False)),
+        "roi_method": getattr(args, "roi_method", None),
+        "roi_thresh": getattr(args, "roi_thresh", None),
+        "denoise": bool(getattr(args, "denoise", False)),
+        "denoise_method": getattr(args, "denoise_method", None),
+        "denoise_ksize": getattr(args, "denoise_ksize", None),
+        "denoise_sigma": getattr(args, "denoise_sigma", None),
+        "optimizer": optimizer_name,
+        "best_epoch": int(e_best),
+        "macro_dice_mean": macro_mean,
+        "macro_dice_std": macro_std,
+        "per_class_dice_means": per_class_means,
+    }
+    metrics_json = _ensure_dir(args.dest / "metrics.json")
+    with open(metrics_json, "w") as f:
+        json.dump(js, f, indent=2)
+
+    csv_path = _ensure_dir(args.dest.parent / "results.csv")
+    header = ["dataset","mode","seed","use_roi","roi_method","roi_thresh","denoise","denoise_method","denoise_ksize","denoise_sigma","optimizer","best_epoch","macro_dice_mean","macro_dice_std"] + [f"dice_class_{k}" for k in range(K)]
+    row = [js[h] if h in js else None for h in header[:14]] + per_class_means
+    exists = csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not exists: writer.writerow(header)
+        writer.writerow(row)
+
+    # aggregate
+    df = pd.read_csv(csv_path)
+
+    metric_cols = ["macro_dice_mean"] + [f"dice_class_{k}" for k in range(K)]
+    for c in metric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    group_cols = [
+        "dataset", "mode", "use_roi", "roi_method", "roi_thresh",
+        "denoise", "denoise_method", "denoise_ksize", "denoise_sigma", "optimizer"
+    ]
+
+    grouped = df.groupby(group_cols, dropna=False)[metric_cols].agg(['mean', 'std']).reset_index()
+
+    def flat(col):
+        if not isinstance(col, tuple):
+            return col
+        base, stat = col
+        return base if stat == '' else f"{base}_{stat}"
+
+    grouped.columns = [flat(c) for c in grouped.columns]
+
+    agg_path = args.dest.parent / "results_aggregated.csv"
+    grouped.to_csv(agg_path, index=False)
+    print(f">> Updated aggregated results at {agg_path}")
+
+
+def gt_transform(K, img):
+    img = np.array(img)[...]
+    # The idea is that the classes are mapped to {0, 255} for binary cases
+    # {0, 85, 170, 255} for 4 classes
+    # {0, 51, 102, 153, 204, 255} for 6 classes
+    # Very sketchy but that works here and that simplifies visualization
+    img = img / (255 / (K - 1)) if K != 5 else img / 63  # max <= 1
+    img = torch.tensor(img, dtype=torch.int64)[None, ...]  # Add one dimension to simulate batch
+    img = class2one_hot(img, K=K)
+    return img[0]
+
+@dataclass
+class Denoise2D:
+    """
+    Apply denoising on a single-channel tensor in [0,1].
+    Methods:
+      - 'gaussian': separable Gaussian blur with given kernel size and sigma
+      - 'median'  : median blur with given kernel size
+    """
+    method: str = "gaussian"
+    ksize: int = 5
+    sigma: float = 1.0
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        assert t.ndim == 3 and t.shape[0] == 1, "Expected [1,H,W] float tensor"
+        c, h, w = t.shape
+        k = int(self.ksize)
+        if k % 2 == 0 or k < 1:
+            raise ValueError("ksize must be an odd positive integer")
+
+        if self.method == "gaussian":
+            return self._gaussian_blur(t, k, float(self.sigma))
+        elif self.method == "median":
+            return self._median_blur(t, k)
+        else:
+            raise ValueError(f"Unknown denoise method: {self.method}")
+
+    @staticmethod
+    def _gaussian_kernel1d(ksize: int, sigma: float, device) -> torch.Tensor:
+        radius = ksize // 2
+        x = torch.arange(-radius, radius + 1, device=device, dtype=torch.float32)
+        kernel = torch.exp(-0.5 * (x / max(sigma, 1e-6)) ** 2)
+        kernel = kernel / kernel.sum()
+        return kernel
+
+    def _gaussian_blur(self, t: torch.Tensor, ksize: int, sigma: float) -> torch.Tensor:
+        device = t.device
+        g1d = self._gaussian_kernel1d(ksize, sigma, device)
+
+        w_h = g1d.view(1, 1, 1, -1)
+        w_v = g1d.view(1, 1, -1, 1)
+        x = F.pad(t.unsqueeze(0), (pad, pad, pad, pad), mode='reflect')
+        x = F.conv2d(x, w_h, padding=0)
+        x = F.conv2d(x, w_v, padding=0)
+        return x.squeeze(0)
+
+    def _median_blur(self, t: torch.Tensor, ksize: int) -> torch.Tensor:
+        pad = ksize // 2
+        x = F.pad(t.unsqueeze(0), (pad, pad, pad, pad), mode='reflect')
+        patches = F.unfold(x, kernel_size=ksize, stride=1)
+        med = patches.median(dim=1).values
+        h, w = t.shape[1], t.shape[2]
+        med = med.view(1, 1, h, w)
+        return med.squeeze(0)
+
+@dataclass
+class ROIBackgroundStrip:
+    """
+    Suppress background by thresholding (keeps original tensor shape).
+    Default: Otsu computed on the single-channel image in [0,1].
+    """
+    method: str = "otsu"   # 'otsu' or 'fixed'
+    thresh: float = 0.0    # if method == 'fixed'
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        assert t.ndim == 3 and t.shape[0] == 1, "Expected [1,H,W] float tensor in [0,1]"
+        x = t[0]  # [H, W]
+
+        if self.method == "fixed":
+            thr = float(self.thresh)
+        elif self.method == "otsu":
+            nbins = 256
+            x_clamped = x.clamp(0.0, 1.0)
+            hist = torch.histc(x_clamped, bins=nbins, min=0.0, max=1.0)
+            if hist.sum() == 0:
+                thr = 0.0
+            else:
+                bin_edges = torch.linspace(0.0, 1.0, steps=nbins + 1, device=x.device, dtype=torch.float32)
+                bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+                w0 = torch.cumsum(hist, dim=0)
+                w1 = hist.sum() - w0
+                m_cum = torch.cumsum(hist * bin_centers, 0)
+                muT = m_cum[-1]
+
+                # Avoid uninitialized vars: use zeros_like(w0/w1)
+                mu0 = torch.where(w0 > 0, m_cum / w0, torch.zeros_like(w0, dtype=torch.float32))
+                mu1 = torch.where(w1 > 0, (muT - m_cum) / w1, torch.zeros_like(w1, dtype=torch.float32))
+
+                sigma_b2 = w0 * w1 * (mu0 - mu1) ** 2
+                idx = torch.argmax(sigma_b2)
+                thr = float(bin_centers[idx].item())
+
+        else:
+            raise ValueError(f"Unknown ROI method: {self.method}")
+
+        mask = (x > thr).to(t.dtype)
+        return t * mask.unsqueeze(0)
 
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
-    gpu: bool = args.gpu and torch.cuda.is_available()
-    device = torch.device("cuda") if gpu else torch.device("cpu")
+    if args.gpu and torch.cuda.is_available():
+        device = torch.device("cuda")
+        torch.backends.cudnn.benchmark = True
+    elif args.gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
     print(f">> Picked {device} to run experiments")
+
+    if getattr(args, "seed", None) is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if device.type == 'cuda':
+            torch.cuda.manual_seed_all(args.seed)
+        print(f">> Set all seeds to {args.seed}")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    g = None
+    if getattr(args, "seed", None) is not None:
+        g = torch.Generator()
+        g.manual_seed(args.seed)
+
 
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
@@ -73,49 +280,50 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     lr = 0.0005
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
-
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
     root_dir = Path("data") / args.dataset
 
-    img_transform = transforms.Compose([
-        lambda img: img.convert('L'),
-        lambda img: np.array(img)[np.newaxis, ...],
-        lambda nd: nd / 255,  # max <= 1
-        lambda nd: torch.tensor(nd, dtype=torch.float32)
-    ])
+    # Picklable image transform (no lambdas, all top-level ops)
+    base_img_transforms = [
+        transforms.Grayscale(num_output_channels=1),
+        transforms.ToTensor(),  # -> [C,H,W] float32 in [0,1]
+    ]
+    if getattr(args, "denoise", False):
+        base_img_transforms.append(
+            Denoise2D(
+                method=args.denoise_method,
+                ksize=args.denoise_ksize,
+                sigma=args.denoise_sigma
+            )
+        )
 
-    gt_transform = transforms.Compose([
-        lambda img: np.array(img)[...],
-        # The idea is that the classes are mapped to {0, 255} for binary cases
-        # {0, 85, 170, 255} for 4 classes
-        # {0, 51, 102, 153, 204, 255} for 6 classes
-        # Very sketchy but that works here and that simplifies visualization
-        lambda nd: nd / (255 / (K - 1)) if K != 5 else nd / 63,  # max <= 1
-        lambda nd: torch.tensor(nd, dtype=torch.int64)[None, ...],  # Add one dimension to simulate batch
-        lambda t: class2one_hot(t, K=K),
-        itemgetter(0)
-    ])
+    if getattr(args, "use_roi", False):
+        base_img_transforms.append(
+            ROIBackgroundStrip(method=args.roi_method, thresh=args.roi_thresh)
+        )
+    img_transform = transforms.Compose(base_img_transforms)
 
     train_set = SliceDataset('train',
                              root_dir,
                              img_transform=img_transform,
-                             gt_transform=gt_transform,
+                             gt_transform= partial(gt_transform, K),
                              debug=args.debug)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
-                              shuffle=True)
+                              shuffle=True,generator=g)
 
     val_set = SliceDataset('val',
                            root_dir,
                            img_transform=img_transform,
-                           gt_transform=gt_transform,
+                           gt_transform=partial(gt_transform, K),
                            debug=args.debug)
     val_loader = DataLoader(val_set,
                             batch_size=B,
                             num_workers=5,
-                            shuffle=False)
+                            shuffle=False,generator=g)
+
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
@@ -228,6 +436,8 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+            log_dice_epoch = log_dice_val[e].cpu().numpy()  # [N_images, K]
+            write_run_summary(args, e, log_dice_epoch)
 
 
 def main():
@@ -237,18 +447,46 @@ def main():
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path, required=True,
-                        help="Destination directory to save the results (predictions and weights).")
+                        help="Destination directory to save the results_2 (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--use_roi', action='store_true',
+                        help="Enable simple ROI preprocessing that suppresses background intensities (no size change).")
+    parser.add_argument('--roi_method', default='otsu', choices=['otsu', 'fixed'],
+                        help="ROI thresholding method: 'otsu' (default) or 'fixed'.")
+    parser.add_argument('--roi_thresh', default=0.1, type=float,
+                        help="Fixed threshold in [0,1] if --roi_method fixed (ignored for 'otsu').")
+
+    parser.add_argument('--denoise', action='store_true',
+                        help="Apply denoising to input images (after ToTensor).")
+
+    parser.add_argument('--denoise_method', default='gaussian', choices=['gaussian', 'median'],
+                        help="Denoising method: 'gaussian' (separable blur) or 'median'.")
+
+    parser.add_argument('--denoise_ksize', default=5, type=int,
+                        help="Kernel size for denoising (odd integer).")
+
+    parser.add_argument('--denoise_sigma', default=1.0, type=float,
+                        help="Sigma for gaussian denoising (ignored by median).")
+
+    parser.add_argument('--seeds', type=str, default=None,
+                        help="Comma-separated seeds; if set, overrides --seed and loops internally")
 
     args = parser.parse_args()
 
     pprint(args)
 
-    runTraining(args)
+    if args.seeds:
+        for s in [int(x) for x in args.seeds.split(',')]:
+            sub = argparse.Namespace(**vars(args))
+            sub.seed = s
+            sub.dest = args.dest / f"seed{s}"
+            runTraining(sub)
+    else:
+        runTraining(args)
 
 
 if __name__ == '__main__':

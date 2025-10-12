@@ -11,6 +11,9 @@ import numpy as np
 
 from utils import map_, tqdm_
 
+from nibabel import load as nload
+from skimage.transform import resize
+from imageio.v2 import imwrite
 
 """
 TODO: Implement image normalisation.
@@ -19,10 +22,8 @@ Goal: normalize an image array to the range [0, 255]  and return it as a dtype=u
 Which is compatible with standard image formats (PNG)
 """
 def norm_arr(img: np.ndarray) -> np.ndarray:
-    # TODO: your code here
-
-    raise NotImplementedError("Implement norm_arr")
-
+    normalized_img = (img - img.min()) / (img.max() - img.min()) * 255
+    return normalized_img.astype(np.uint8)
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
     assert ct.dtype in [np.int16, np.int32], ct.dtype
@@ -80,9 +81,53 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     assert ct_path.exists()
 
     # --------- FILL FROM HERE -----------
+    ct_img = nload(str(ct_path))
+    ct = ct_img.get_fdata(dtype=np.float32).astype(np.int16)
+    x, y, z = ct.shape
+    dx, dy, dz = ct_img.header.get_zooms()
 
-    raise NotImplementedError("Implement slice_patient")
+    gt = None
+    if not test_mode:
+        gt_path = id_path / "GT.nii.gz"
+        if not gt_path.exists():
+            warnings.warn(f"Patient {id_} has no GT")
+            return None
+        gt_img = nload(str(gt_path))
+        gt = gt_img.get_fdata(dtype=np.float32).astype(np.uint8)
 
+
+    valid_ct = sanity_ct(ct, x, y, z, dx, dy, dz)
+    valid_gt = sanity_gt(gt, ct) if not test_mode else True
+    assert valid_ct and valid_ct
+
+    ct = norm_arr(ct)
+
+    img_dir = dest_path / "img"
+    gt_dir = dest_path / "gt"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    if not test_mode:
+        gt_dir.mkdir(parents=True, exist_ok=True)
+
+    ct_slices = [resize(ct[:, :, i], shape, order=1, anti_aliasing=True, preserve_range=True)
+                 for i in range(z)]
+    if not test_mode:
+        gt_slices = [resize(gt[:, :, i], shape, order=0, preserve_range=True, anti_aliasing=False)
+                     for i in range(z)]
+
+    for i in range(z):
+        fname = f"{id_}_{i:04d}.png"
+
+        ct_u8 = np.clip(np.rint(ct_slices[i]), 0, 255).astype(np.uint8)
+        imwrite(str(img_dir / fname), ct_u8)
+
+        if not test_mode:
+            gt_u8 = np.rint(gt_slices[i]).astype(np.uint8)
+            gt_u8 *= 63
+            assert gt_u8.dtype == np.uint8, gt_u8.dtype
+            assert set(np.unique(gt_u8)) <= {0, 63, 126, 189, 252}, np.unique(gt_u8)
+            imwrite(str(gt_dir / fname), gt_u8)
+
+    return float(dx), float(dy), float(dz)
 
 """
 TODO: Implement a simple train/val split.
@@ -95,9 +140,11 @@ Requirements:
 
 def get_splits(src_path: Path, retains: int) -> tuple[list[str], list[str]]:
     # TODO: your code here
-
-    raise NotImplementedError("Implement get_splits")
-
+    patient_ids = [p.name for p in (src_path / "train").iterdir() if p.is_dir()]
+    random.shuffle(patient_ids)
+    val_ids = patient_ids[:retains]
+    train_ids = patient_ids[retains:]
+    return train_ids, val_ids
 def main(args: argparse.Namespace):
     src_path: Path = Path(args.source_dir)
     dest_path: Path = Path(args.dest_dir)
