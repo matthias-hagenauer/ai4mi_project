@@ -50,7 +50,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import (CrossEntropy)
+from losses import *
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -237,7 +237,7 @@ def main():
 
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
-    parser.add_argument('--mode', default='full', choices=['partial', 'full'])
+    parser.add_argument('--mode', default='full', choices=['partial', 'full', 'dice', 'adj_ce', 'focal', 'combo', 'focal_dice', 'focal_cross'])
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
 
