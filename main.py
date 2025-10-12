@@ -237,7 +237,7 @@ def main():
 
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
-    parser.add_argument('--mode', default='full', choices=['partial', 'full', 'dice', 'adj_ce', 'focal', 'combo', 'focal_dice', 'focal_cross'])
+    parser.add_argument('--mode', default='full', choices=['partial', 'full', 'dice', 'focal', 'combo', 'focal_dice', 'focal_cross'])
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
 
