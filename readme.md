@@ -48,7 +48,7 @@ $ python -m pip install -r requirements.txt
 ```
 Conda is an alternative to pip, but is recommended not to mix `conda install` and `pip install`.
 
-### Setting up the environment - Some troubleshooting for windows users 
+#### Setting up the environment - Some troubleshooting for windows users
 These steps assume you are using Git Bash + Anaconda + an IDE (e.g., PyCharm).
 
 Open git bash and run:
@@ -106,7 +106,6 @@ $ make data/TOY2
 $ make data/SEGTHOR
 ```
 
-**Implementing slice_segthor.py is part of assignment 01**. An official implementation will be shared by assignment 02.
 
 For windows users, you can use the following instead
 ```
@@ -122,6 +121,31 @@ $ python  slice_segthor.py --source_dir data/segthor_train --dest_dir data/SEGTH
          --shape 256 256 --retain 10
 $ mv data/SEGTHOR_tmp data/SEGTHOR
 ````
+
+### Fixing and reslicing the data (solutions to assignments)
+Solution from scratch (`make data/SEGTHOR_CLEAN CFLAGS=-O`)  (read what `python -O` does):
+```
+$ make data/SEGTHOR_CLEAN CFLAGS=-O -n  # Will display the commands that will run, easy to inspect:
+rm -rf data/segthor_fixed_tmp data/segthor_fixed
+python -O sabotage.py --mode inv --source_dir data/segthor_train --dest_dir data/segthor_fixed_tmp -K 2 --regex_gt "GT.nii.gz" -p 4
+mv data/segthor_fixed_tmp data/segthor_fixed
+rm -rf data/SEGTHOR_CLEAN_tmp data/SEGTHOR_CLEAN
+python -O slice_segthor.py --source_dir data/segthor_fixed --dest_dir data/SEGTHOR_CLEAN_tmp \
+        --shape 256 256 --retain 10 -p -1
+mv data/SEGTHOR_CLEAN_tmp data/SEGTHOR_CLEAN
+
+
+$ make data/SEGTHOR_CLEAN CFLAGS=-O # Or, for windows users, copy the previously displayed commands
+$ python slice_segthor.py --help   # May be useful for the project
+```
+
+
+**Alternatively**, if you had saved the "fixed" scans within the `data/segthor_train` folder under the `GT_fixed.nii.gz` name, you can trivially create a `data/segthor_fixed` folder with:
+```
+cp -r data/segthor_train data/segthor_fixed
+rm data/segthor_fixed/train/*/GT.nii.gz
+for p in data/segthor_fixed/train/*/; do mv $p/GT_fixed.nii.gz $p/GT.nii.gz ; done
+```
 
 ### Viewing the data
 The data can be viewed in different ways:
@@ -140,9 +164,83 @@ $ python viewer/viewer.py --img_source data/TOY2/val/img \
 **Note:** if using it from a SSH session, it requires X to be forwarded ([Unix/BSD](https://man.archlinux.org/man/ssh.1#X), [Windows](https://mobaxterm.mobatek.net/documentation.html#1_4)) for it to work. Note that X forwarding also needs to be enabled on the server side.
 
 
-#### 3D viewers
-[3D Slicer](https://www.slicer.org/) and [ITK Snap](http://www.itksnap.org) are two popular viewers for medical data. We recommend 3D Slicer for the course.
+For Segthor, comparing for instance the original data, the fixed ones, and the validation predictions at epoch 10:
+```
+$ python viewer/viewer.py --img_source data/SEGTHOR_CLEAN/val/img \
+    data/SEGTHOR/val/gt data/SEGTHOR_CLEAN/val/gt results/segthor/ce/iter010/val \
+    -n 2 -C 5 --remap "{63: 1, 126: 2, 189: 3, 252: 4}" \
+    --legend --class_names background esophagus heart trachea aorta
+```
+![Example of the viewer on the SEGTHOR pre-processed sets](viewer_segthor.png)
 
+#### 3D viewers
+[3D Slicer](https://www.slicer.org/) and [ITK Snap](http://www.itksnap.org) are two popular viewers for medical data, here comparing `GT.nii.gz` and the corresponding stitched prediction `Patient_01.nii.gz`:
+![Viewing label and prediction](3dslicer.png)
+
+Zooming on the prediction with smoothing disabled:
+![Viewing the prediction without smoothing](3dslicer_zoom.png)
+
+
+## Submission and scoring
+Groups will have to submit:
+* archive of the git repo with the whole project, which includes:
+    * slicing (if any) and any other pre-processing;
+    * training;
+    * post-processing when applicable;
+    * inference;
+    * metrics computation/scripts to run the metrics submodule;
+* the best trained model;
+* predictions on the [test set (required @uva.nl account)](https://amsuni-my.sharepoint.com/:u:/g/personal/h_t_g_kervadec_uva_nl/EWZH7ylUUFFCg3lEzzLzJqMBG7OrPw1K4M78wq9t5iBj_w?e=Yejv5d) (`sha256sum -c data/test.zip.sha256` as optional checksum);
+* predictions on the group's internal validation set, the labels of their validation set, and the metrics they computed (akin to Assignment 3).
+
+The main criterions for scoring will include (listed here only for convenience, please see Canvas for reference rubric):
+* improvement or lack thereof of performances over baseline;
+* code quality/clear [git use](git.md);
+* the [final choice of metrics](https://metrics-reloaded.dkfz.de/) (they need to be in 3D);
+* correctness of the computed metrics (on the validation set);
+* oral presentation.
+
+
+### Packing the code
+`$ git bundle create group-XX.bundle master`
+
+### Saving the best model
+`torch.save(net, args.dest / "bestmodel-group-XX.pkl")`
+
+### Archiving everything for submission
+All files should be grouped in single folder with the following structure
+```
+group-XX/
+    test/
+        pred/
+            Patient_41.nii.gz
+            Patient_42.nii.gz
+            ...
+    val/
+        pred/
+            Patient_21.nii.gz
+            Patient_32.nii.gz
+            ...
+        gt/
+            Patient_21.nii.gz
+            Patient_32.nii.gz
+            ...
+        metric01.npz
+        metric02.npz
+        ...
+    group-XX.bundle
+    bestmodel-group-XX.pkl
+```
+The metrics should be a `.npz` archives, that maps patient ID (e.g., `Patient_21`) to a `ndarray` with shape `KxD` (or `K` if `D = 1`), with `K` the number of classes and `D` the eventual dimensionality of the metric (can be simply 1). Ultimately it is the same format as Distorch from Assignment 3.
+
+
+The folder should then be [tarred](https://xkcd.com/1168/) and compressed, e.g.:
+```
+Example using Zstandard:
+$ tar cf - group-XX/ | zstd -T0 -3 > group-XX.tar.zst
+Example using gunzip:
+$ tar cf group-XX.tar.gz - group-XX/
+```
 
 ## Known issues
 ### Cannot pickle lambda in the dataloader

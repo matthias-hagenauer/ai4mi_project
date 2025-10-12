@@ -21,6 +21,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+import json, csv
 
 import argparse
 import random
@@ -39,6 +40,9 @@ from torch import nn, Tensor
 from torchvision import transforms
 from torch.utils.data import DataLoader
 import pandas as pd
+
+from functools import partial
+
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
@@ -60,9 +64,8 @@ datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'fac
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 optimizer_name = None
-# --- NEW: write a compact metrics row for aggregation ---
-import json, csv
 
+# Helper Function
 def _ensure_dir(p: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
@@ -242,34 +245,66 @@ class ROIBackgroundStrip:
         mask = (x > thr).to(t.dtype)
         return t * mask.unsqueeze(0)
 
+def img_transform(img):
+        img = img.convert('L')
+        img = np.array(img)[np.newaxis, ...]
+        img = img / 255  # max <= 1
+        img = torch.tensor(img, dtype=torch.float32)
+        return img
+
+def img_transform_denoise_only(
+    img,
+    *,
+    denoise_method: str = "gaussian",
+    denoise_ksize: int = 5,
+    denoise_sigma: float = 1.0,
+):
+    """Base -> denoise."""
+    t = img_transform(img)
+    return Denoise2D(method=denoise_method, ksize=denoise_ksize, sigma=denoise_sigma)(t)
+
+def img_transform_roi_only(
+    img,
+    *,
+    roi_method: str = "otsu",
+    roi_thresh: float = 0.1,
+):
+    """Base -> ROI background suppression."""
+    t = img_transform(img)
+    return ROIBackgroundStrip(method=roi_method, thresh=roi_thresh)(t)
+
+
+def gt_transform(K, img):
+        img = np.array(img)[...]
+        # The idea is that the classes are mapped to {0, 255} for binary cases
+        # {0, 85, 170, 255} for 4 classes
+        # {0, 51, 102, 153, 204, 255} for 6 classes
+        # Very sketchy but that works here and that simplifies visualization
+        img = img / (255 / (K - 1)) if K != 5 else img / 63  # max <= 1
+        img = torch.tensor(img, dtype=torch.int64)[None, ...]  # Add one dimension to simulate batch
+        img = class2one_hot(img, K=K)
+        return img[0]
+
+def set_seed(seed: int, device):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(seed)
+    print(f">> Set all seeds to {seed}")
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    #g = torch.Generator()
+    #g.manual_seed(seed)
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
-    if args.gpu and torch.cuda.is_available():
-        device = torch.device("cuda")
-        torch.backends.cudnn.benchmark = True
-    elif args.gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-
+    gpu: bool = args.gpu and torch.cuda.is_available()
+    device = torch.device("cuda") if gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
-    if getattr(args, "seed", None) is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        if device.type == 'cuda':
-            torch.cuda.manual_seed_all(args.seed)
-        print(f">> Set all seeds to {args.seed}")
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-    g = None
-    if getattr(args, "seed", None) is not None:
-        g = torch.Generator()
-        g.manual_seed(args.seed)
-
+    # Reproducibility
+    set_seed(args.seed, device)
 
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
@@ -285,30 +320,31 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     root_dir = Path("data") / args.dataset
 
     # Picklable image transform (no lambdas, all top-level ops)
-    base_img_transforms = [
-        transforms.Grayscale(num_output_channels=1),
-        transforms.ToTensor(),  # -> [C,H,W] float32 in [0,1]
-    ]
-    if getattr(args, "denoise", False):
-        base_img_transforms.append(
-            Denoise2D(
-                method=args.denoise_method,
-                ksize=args.denoise_ksize,
-                sigma=args.denoise_sigma
-            )
-        )
 
-    if getattr(args, "use_roi", False):
-        base_img_transforms.append(
-            ROIBackgroundStrip(method=args.roi_method, thresh=args.roi_thresh)
+    if getattr(args, "denoise", False):
+        img_transform_fn = partial(
+            img_transform_denoise_only,
+            denoise_method=getattr(args, "denoise_method", "gaussian"),
+            denoise_ksize=int(getattr(args, "denoise_ksize", 5)),
+            denoise_sigma=float(getattr(args, "denoise_sigma", 1.0)),
         )
-    img_transform = transforms.Compose(base_img_transforms)
+    elif getattr(args, "use_roi", False):
+        img_transform_fn = partial(
+            img_transform_roi_only,
+            roi_method=getattr(args, "roi_method", "otsu"),
+            roi_thresh=float(getattr(args, "roi_thresh", 0.1)),
+        )
+    else:
+        img_transform_fn = img_transform
+
 
     train_set = SliceDataset('train',
                              root_dir,
-                             img_transform=img_transform,
+                             img_transform=img_transform_fn,
                              gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                             debug=args.debug,
+                            augment=args.augment,  #!
+                             seed=args.seed)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -316,7 +352,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     val_set = SliceDataset('val',
                            root_dir,
-                           img_transform=img_transform,
+                           img_transform=img_transform_fn,
                            gt_transform=partial(gt_transform, K),
                            debug=args.debug)
     val_loader = DataLoader(val_set,
@@ -453,6 +489,9 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--augment', action='store_true')
+    parser.add_argument('--seed', type=int, default=0)
+
     parser.add_argument('--use_roi', action='store_true',
                         help="Enable simple ROI preprocessing that suppresses background intensities (no size change).")
     parser.add_argument('--roi_method', default='otsu', choices=['otsu', 'fixed'],
