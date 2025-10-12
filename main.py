@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import argparse
+import random
 import warnings
 from typing import Any
 from pathlib import Path
@@ -77,11 +78,26 @@ def gt_transform(K, img):
         img = class2one_hot(img, K=K)
         return img[0]
 
+def set_seed(seed: int, device):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(seed)
+    print(f">> Set all seeds to {seed}")
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    #g = torch.Generator()
+    #g.manual_seed(seed)
+
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
     gpu: bool = args.gpu and torch.cuda.is_available()
     device = torch.device("cuda") if gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
+    
+    # Reproducibility
+    set_seed(args.seed, device)
 
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
@@ -97,12 +113,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     B: int = datasets_params[args.dataset]['B']
     root_dir = Path("data") / args.dataset
 
-
-
     train_set = SliceDataset('train',
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
+                             augment=args.augment,  #!
                              debug=args.debug)
     train_loader = DataLoader(train_set,
                               batch_size=B,
@@ -246,6 +261,9 @@ def main():
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
 
+    parser.add_argument('--augment', action='store_true')
+    parser.add_argument('--seed', type=int, default=0)
+    
     args = parser.parse_args()
 
     pprint(args)
