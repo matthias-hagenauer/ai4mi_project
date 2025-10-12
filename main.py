@@ -343,7 +343,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              img_transform=img_transform_fn,
                              gt_transform= partial(gt_transform, K),
                              debug=args.debug,
-                            augment=args.augment,  #!
+                             augment=args.augment,  #!
                              seed=args.seed)
     train_loader = DataLoader(train_set,
                               batch_size=B,
