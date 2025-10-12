@@ -27,6 +27,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+import os
+# set seed form env
+torch.manual_seed(os.environ['SEED'])
 
 def random_weights_init(m):
         if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):

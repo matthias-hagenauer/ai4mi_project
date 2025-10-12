@@ -38,6 +38,7 @@ from skimage.transform import resize
 
 from utils import map_, tqdm_
 
+import os
 
 def norm_arr(img: np.ndarray) -> np.ndarray:
     casted = img.astype(np.float32)
@@ -206,7 +207,7 @@ def get_args() -> argparse.Namespace:
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=os.environ['SEED'])
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
