@@ -143,11 +143,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     net.init_weights()
     net.to(device)
 
-    lr = 0.0005
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    lr = 0.001
+    optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999))
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
-    root_dir = Path("data") / args.dataset
+
+    root_dir = args.root / args.dataset
 
     # Picklable image transform (no lambdas, all top-level ops)
 
@@ -354,7 +355,8 @@ def main():
 
     parser.add_argument('--augment', action='store_true')
     parser.add_argument('--seed', type=int, default=0)
-
+    parser.add_argument("--root", type=Path, default=Path("data"),
+                        help="Root data directory containing the datasets subfolders.")
     args = parser.parse_args()
 
     pprint(args)
