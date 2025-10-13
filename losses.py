@@ -51,3 +51,104 @@ class CrossEntropy():
 class PartialCrossEntropy(CrossEntropy):
     def __init__(self, **kwargs):
         super().__init__(idk=[1], **kwargs)
+
+
+#### from here on newly implemented losses ####
+
+class DiceLoss():
+    def __init__(self, idk=None, smooth=1e-6):
+        self.idk = idk  # List of classes to supervise
+        self.smooth = smooth
+
+    def __call__(self, pred_softmax, target):
+        """
+        pred_softmax: (B, C, H, W) probabilities
+        target: one-hot encoded (B, C, H, W)
+        """
+        if self.idk is not None:
+            pred = pred_softmax[:, self.idk, ...]
+            target = target[:, self.idk, ...]
+        else:
+            pred = pred_softmax
+            target = target
+
+        # Flatten per batch
+        pred_flat = pred.contiguous().view(pred.shape[0], -1)
+        target_flat = target.contiguous().view(target.shape[0], -1)
+
+        intersection = (pred_flat * target_flat).sum(dim=1)
+        union = pred_flat.sum(dim=1) + target_flat.sum(dim=1)
+
+        loss = 1 - (2 * intersection + self.smooth) / (union + self.smooth)
+        return loss.mean()
+
+
+class ComboLoss():
+    def __init__(self, alpha=0.5, idk=None):
+        self.alpha = alpha
+        self.dice = DiceLoss(idk=idk)
+        self.ce = CrossEntropy(idk=idk)
+
+    def __call__(self, pred_softmax, target):
+
+        dice_loss = self.dice(pred_softmax, target)
+        ce_loss = self.ce(pred_softmax, target)
+        return self.alpha * ce_loss + (1 - self.alpha) * dice_loss
+
+
+
+class FocalLoss():
+    """
+    Focal Loss (Lin et al. 2017)
+    Focuses on hard examples by down-weighting easy ones.
+    Works for multi-class segmentation (with softmax inputs).
+    """
+    def __init__(self, alpha=1.0, gamma=2.0, idk=None):
+        self.alpha = alpha
+        self.gamma = gamma
+        self.idk = idk
+
+    def __call__(self, pred_softmax, target):
+        if self.idk is not None:
+            pred_softmax = pred_softmax[:, self.idk, ...]
+            target = target[:, self.idk, ...]
+
+        eps = 1e-10
+        pred_softmax = torch.clamp(pred_softmax, eps, 1.0 - eps)
+
+        loss = -self.alpha * target * (1 - pred_softmax) ** self.gamma * pred_softmax.log()
+        return loss.mean()
+
+
+
+class ComboFocalCrossEntropy():
+    """
+    Combination of Focal Loss and Cross Entropy Loss.
+    alpha controls the weighting between the two losses.
+    """
+    def __init__(self, alpha=0.5, idk=None, focal_alpha=1.0, gamma=2.0):
+        self.alpha = alpha
+        self.focal = FocalLoss(alpha=focal_alpha, gamma=gamma, idk=idk)
+        self.ce = CrossEntropy(idk=idk)
+
+    def __call__(self, pred_softmax, target):
+        focal_loss = self.focal(pred_softmax, target)
+        ce_loss = self.ce(pred_softmax, target)
+        return self.alpha * ce_loss + (1 - self.alpha) * focal_loss
+
+
+class ComboFocalDice():
+    """
+    Combination of Focal Loss and Dice Loss.
+    alpha controls the weighting between the two losses.
+    """
+    def __init__(self, alpha=0.5, idk=None, focal_alpha=1.0, gamma=2.0):
+        self.alpha = alpha
+        self.focal = FocalLoss(alpha=focal_alpha, gamma=gamma, idk=idk)
+        self.dice = DiceLoss(idk=idk)
+
+    def __call__(self, pred_softmax, target):
+        focal_loss = self.focal(pred_softmax, target)
+        dice_loss = self.dice(pred_softmax, target)
+        return self.alpha * dice_loss + (1 - self.alpha) * focal_loss
+
