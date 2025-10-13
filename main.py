@@ -53,6 +53,7 @@ from utils import (Dcm,
 
 from losses import (CrossEntropy)
 from functools import partial
+from losses import *
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -203,6 +204,16 @@ def runTraining(args):
         loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
         loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+    elif args.mode in ["dice"]:
+        loss_fn = DiceLoss(idk=list(range(K)))
+    elif args.mode in ["focal"]:
+        loss_fn = FocalLoss(idk=list(range(K)))
+    elif args.mode in ["combo"]:
+        loss_fn = ComboLoss(idk=list(range(K)))
+    elif args.mode in ["focal_dice"]:
+        loss_fn = ComboFocalDice(idk=list(range(K)))
+    elif args.mode in ["focal_cross"]:
+        loss_fn = ComboFocalCrossEntropy(idk=list(range(K)))
     else:
         raise ValueError(args.mode, args.dataset)
 
@@ -308,7 +319,7 @@ def main():
 
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
-    parser.add_argument('--mode', default='full', choices=['partial', 'full'])
+    parser.add_argument('--mode', default='full', choices=['partial', 'full', 'dice', 'focal', 'combo', 'focal_dice', 'focal_cross'])
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results_2 (predictions and weights).")
 
@@ -356,7 +367,6 @@ def main():
             runTraining(sub)
     else:
         runTraining(args)
-
 
 if __name__ == '__main__':
     main()
