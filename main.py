@@ -158,6 +158,7 @@ class Denoise2D:
     method: str = "gaussian"
     ksize: int = 5
     sigma: float = 1.0
+    pad = ksize // 2
 
     def __call__(self, t: torch.Tensor) -> torch.Tensor:
         assert t.ndim == 3 and t.shape[0] == 1, "Expected [1,H,W] float tensor"
@@ -294,8 +295,9 @@ def set_seed(seed: int, device):
     print(f">> Set all seeds to {seed}")
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    #g = torch.Generator()
-    #g.manual_seed(seed)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return g
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
@@ -304,7 +306,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     print(f">> Picked {device} to run experiments")
 
     # Reproducibility
-    set_seed(args.seed, device)
+    g= set_seed(args.seed, device)
 
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8

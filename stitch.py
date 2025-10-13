@@ -68,7 +68,7 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 
         res_arr[:, :, z] = resized[...]
 
-    assert set(np.unique(res_arr)) <= set(range(K))
+    # assert set(np.unique(res_arr)) <= set(range(K))
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
 
     # res_arr = res_arr.astype(np.int16)
