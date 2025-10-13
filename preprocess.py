@@ -1,3 +1,7 @@
+"""
+Image preprocessing operations such as denoising and background suppression.
+"""
+
 from dataclasses import dataclass
 
 import torch
