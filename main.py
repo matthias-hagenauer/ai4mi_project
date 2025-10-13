@@ -132,6 +132,16 @@ def runTraining(args):
         loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
         loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+    elif args.mode in ["dice"]:
+        loss_fn = DiceLoss(idk=list(range(K))) 
+    elif args.mode in ["focal"]:
+        loss_fn = FocalLoss(idk=list(range(K))) 
+    elif args.mode in ["combo"]:
+        loss_fn = ComboLoss(idk=list(range(K)))  
+    elif args.mode in ["focal_dice"]:
+        loss_fn = ComboFocalDice(idk=list(range(K))) 
+    elif args.mode in ["focal_cross"]:
+        loss_fn = ComboFocalCrossEntropy(idk=list(range(K)))  
     else:
         raise ValueError(args.mode, args.dataset)
 
