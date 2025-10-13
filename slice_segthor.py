@@ -69,7 +69,7 @@ def compute_foreground_stats(image, body_mask):
         "p_high": float(p_high)
     }
 
-def norm_arr(img: np.ndarray) -> np.ndarray:
+def norm_arr_percentile(img: np.ndarray) -> np.ndarray:
     # make body mask (i.e exclude backgound / air fat starts at -100 + 100 margin)
     body_mask = img > -200
     
@@ -114,7 +114,7 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False) -> tuple[float, float, float]:
+                  args:argparse.Namespace, test_mode: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -136,7 +136,10 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    if args.percentile_norm:
+        norm_ct: np.ndarray = norm_arr_percentile(ct)
+    else:
+        norm_ct: np.ndarray = norm_arr(ct)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -213,7 +216,7 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
-                                 test_mode=mode == 'test')
+                                 test_mode=mode == 'test', args=args)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -243,6 +246,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
+    parser.add_argument('--percentile_norm', '-pn', type=bool, default=False,
+                        help="Use percentile normalization for processing")
     args = parser.parse_args()
     random.seed(args.seed)
 
