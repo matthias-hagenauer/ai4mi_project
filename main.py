@@ -103,17 +103,6 @@ def gt_transform(K, img):
         img = class2one_hot(img, K=K)
         return img[0]
 
-def set_seed(seed: int, device):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if device.type == 'cuda':
-        torch.cuda.manual_seed_all(seed)
-    print(f">> Set all seeds to {seed}")
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    #g = torch.Generator()
-    #g.manual_seed(seed)
 
 def set_seed(seed: int, device):
     random.seed(seed)
