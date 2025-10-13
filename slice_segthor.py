@@ -38,6 +38,9 @@ from skimage.transform import resize
 
 from utils import map_, tqdm_
 
+from nibabel import load as nload
+from skimage.transform import resize
+from imageio.v2 import imwrite
 
 def norm_arr(img: np.ndarray) -> np.ndarray:
     casted = img.astype(np.float32)

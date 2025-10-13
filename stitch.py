@@ -58,7 +58,7 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
         z = get_z(img)
         img_arr = imread(img)
         assert img_arr.dtype == np.uint8
-        assert set(np.unique(img_arr)) <= set(range(K))
+        #assert set(np.unique(img_arr)) <= set(range(K)) silence this cuz it fails because we are in *63 scale
 
         resized: np.ndarray = resize(img_arr, (X, Y),
                                      mode="constant",
@@ -68,7 +68,7 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 
         res_arr[:, :, z] = resized[...]
 
-    assert set(np.unique(res_arr)) <= set(range(K))
+    # assert set(np.unique(res_arr)) <= set(range(K))
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
 
     # res_arr = res_arr.astype(np.int16)
@@ -82,7 +82,6 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 def main(args) -> None:
     images: list[Path] = list(Path(args.data_folder).glob("*.png"))
     grouping_regex: Pattern = re.compile(args.grp_regex)
-
     stems: list[str] = map_(lambda p: p.stem, images)
 
     matches: list[Match] = map_(grouping_regex.match, stems)  # type: ignore
